@@ -1,0 +1,651 @@
+---
+title: "QI coastal paper analysis"
+author: "Claudine Gravel-Miguel"
+date: "1/24/2022"
+output: html_document
+---
+
+```{r setup, message=F, echo=F, warning = F}
+
+library(tidyverse)
+library(reshape2)
+library(ggpubr)
+library(raster)
+library(viridis)  # better colors for everyone
+library(ggthemes) # theme_map()
+library(broom) # for linear regressions
+library(knitr)
+
+# To ensure that scientific notation is not used in figures
+options("scipen"=100, "digits"=4)
+
+# And here are the citations for each of those packages (uncomment)
+# citation("tidyverse")
+# citation("reshape2")
+# citation("ggpubr")
+# citation("raster")
+# citation("viridis")
+# citation("ggthemes")
+# citation("stats")
+# citation("broom")
+
+knitr::opts_chunk$set(echo=F, warning=F, message=F) # Setting up the chunk settings for all chunks
+
+```
+
+## Main analysis
+
+## Questions tested
+
+For this research, we try to answer the following questions:
+
+    1a. Does distance from a productive coast influence the intensity of a site’s occupation?
+    2b. Does distance from a productive coast influence the density of artifact found in a site?
+    2. Can we use shell density as an indicator of the importance of shellfish in prehistoric foragers’ diet?
+    
+## Summary of methods
+
+At the end of each run, two types of cells export information: cells that were occupied by a site at some point, and cells where shellfish was processed. The exported information is: 
+
+    1. The kcal of shells, plants, and meat that was brought back to it every day it was occupied (or processed on it)
+    2. The number of hunting tools that were discarded on it    
+    
+**To answer questions 1a and 1b**, we ran linear and third degree polynomial regressions to evaluate the impact of cells’ distance from the coast on their occupation length and on the size of their artifact assemblages. We then categorized each cell by their coastal status (coastal if adjacent to the ocean, and inland elsewhere) and for each run, we compiled the average occupation length and the average number of discarded hunting tools on cells in each habitat (coastal vs. inland cells). To explore the yearly difference in occupation and artifact discard, we compared those averages in individual simulations using boxplots and non-parametric Wilcoxon signed-rank tests. To evaluate how continued occupation of one landscape would change its archaeological signature over longer time periods, we compiled the cells values of all 3200 runs, and here again compared their coastal vs. inland occupation and artifact medians using non-parametric Wilcoxon signed-rank tests. 
+
+**To answer question 2**, we calculated the percentage of the subsistence covered by shellfish in all simulations, then focused only on the cells with >95th percentile of cumulative occupation (the most occupied) and compiled the percentage again. We compared the average of those two percentages using Wilcoxon test again. We also focused on coastal cells among the most occupied cells, and computed the percentage contribution of shellfish on those. We tested the difference between this average and the average of all cells using Wilcoxon test. We then plotted the shellfish calories processed at each cell against the cell's distance from coast to see if it fitted empirical observations (Jerardino 2016).
+
+## Variables used
+
+Based on the results of the Sensitivity Analyses (see *QI_Sensitivity_Analyses.Rmd*), the following variables were used to create a representative dataset:
+
+| Variables          | Values                     | 
+| ------------------ | -------------------------- |
+| spatial-foresight  | TRUE             |     
+| nrcamps            | 5, 15              |
+| daily-time-budget  | 10,12         |  
+| hunter-percent     | 0.3  |
+| vision-forager     | 20   |
+| forager-movement  | local-patch-choice, random
+| nrforagers         | 60  |
+| days_of_foresight  | 5, 10                |
+| global-knowledge?  | TRUE      |
+| walk-speed        | 2, 3 |
+| point-recycling    | 25        |
+| point-hunting-rate | 50  |
+| processing Threshold | 20, 50 |
+
+Each parameter combination was run 50 times. Each run lasted 365 time steps (days). This created a total of 3200 runs, each representing one year.
+
+```{r import the formatted datasets}
+
+# This imports the datasets created (cleaned and formatted) from the Coastal_MainFormatting.R script.
+
+load("FormattedMain.RData")
+
+```
+
+The following is a map of the covered region, with each biome's highest productivity.
+
+```{r Controlling for vegetation extents}
+
+# Get a dataset from the map of vegetation that represents each cell's max Kcal.
+
+veg <- raster("all_habitats_1ha.asc")
+veg.df <- as.data.frame(rasterToPoints(veg))
+
+# Get the values from the biome dataset created before
+veg.df <- veg.df %>% 
+  rename(vegetation = all_habitats_1ha) %>% 
+  left_join(biome, by = c("vegetation" = "vegN")) %>% 
+  mutate(maxKcal = maxKcal * 2019) %>% # get the actual value rather than the normalized one.
+  mutate(maxKcal = ifelse(is.na(maxKcal), -99, maxKcal)) %>% # The ocean gets a negative value
+  dplyr::select(!size) # Do not need the size variable
+
+  # Map the kcal of each cell
+ggplot() +  
+    geom_raster(data=veg.df, aes(x=x, y=y, fill=maxKcal)) + 
+    scale_fill_continuous(high = "grey10", low = "grey100") +
+    ggtitle("Daily plant and shellfish kcal return rate (at best times)") +
+    coord_equal() +
+    theme_map() +
+    theme(legend.position="right") +
+    theme(plot.title = element_text(hjust=0.5, size=14, face="bold"))
+  
+```
+
+## Question 1: Does distance from a productive coast influence the intensity of a site’s occupation?
+
+### Regressions
+
+#### Yearly data
+
+First, this linear regression considers each cell in each simulation as individual observations (i.e., this is yearly data). This includes all cells that were occupied by a camp at least once in a simulation.
+
+```{r formulas for linear regression model}
+
+runningLM <- function(ds, fmla){
+  
+  model <- lm(fmla, data = ds)
+  glanced <- glance(model)
+  
+  summary(model)
+  
+}
+
+```
+
+```{r regression distance impact on occupation} 
+
+ds.sites.only %>% 
+  runningLM(totalLengthOccupation ~ distCoast)
+
+# And visualization
+ggplot(ds.sites.only, aes(x=distCoast, y=totalLengthOccupation)) + 
+  geom_point(alpha=0.1) +
+  xlab("distance coast (km)") + ylab("Number of days the cell was occupied") +
+  theme_classic()
+
+```
+
+The graph shows that there is a lot of variability, which explains the very weak linear regression. It also suggests that the relationship may be non-linear, so we ran a polynomial regression on the dataset to see if it would improve the results. The results are marginally better, but this still suggests that the relationship is not strong between those two variables.
+
+```{r polynomial regression on yearly occupation data}
+
+ds.sites.only %>% 
+  runningLM(totalLengthOccupation ~ poly(distCoast, 3))
+
+```
+
+#### Palimpsest data
+
+Then running the linear regression on the dataset when aggregated by cell (thus summing the length of occupation and artifact assemblage in all 3200 simulations for each cell). Note that the graph axes are logged to better see the data.
+
+```{r linear regression on compiled data}
+
+ds.per.patch.occupied.only <- ds.per.patch %>% 
+    filter(totalLengthOccupation > 0)
+
+# Running the linear regressions
+ds.per.patch.occupied.only %>% 
+  runningLM(totalLengthOccupation ~ distCoast)
+
+# Then visualization
+ds.per.patch.occupied.only %>% 
+  ggplot() +
+  geom_point(aes(x=distCoast, y=totalLengthOccupation), alpha=0.1) +
+  xlab("distance coast (km)") + ylab("Number of days the cell was occupied") +
+  scale_x_log10() + scale_y_log10() +
+  theme_classic()
+
+```
+
+The results of the linear regression and the graph suggest that distance to coast does not linearly predict occupation length of a given cell, but that there is still a non-linear relationship, especially when considering the palimpsest created by all runs. A third degree polynomial regression does not improve the fit much, unfortunately, which is due too much variability in the data.
+
+```{r polynomial regression on palimpsest occupation data}
+
+ds.per.patch.occupied.only %>% 
+  runningLM(totalLengthOccupation ~ poly(distCoast, 3))
+
+```
+
+### Comparing coastal to non-coastal
+
+We separated all cells into coastal vs. inland. Coastal cells are the ones with vegetation types 10 to 14 (TMS and Sandy Beach). They are the cells immediately adjacent to the ocean.
+
+Then we compared the length of occupation and assemblage sizes in coastal vs. inland cells. 
+
+#### Yearly data
+
+This first figure is for each site in each individual simulation (yearly dataset). The notches on the sides of the boxplots show the extent of the Confidence Interval around the median. **Note that the y axis is on a log scale here for better visibility.**
+
+```{r comparing coastal vs. non-coastal and length of occupation}
+
+# Calculate the difference between medians (Wilcoxon)
+stat.test <- compare_means(data=ds.sites.only, totalLengthOccupation ~ coastal) %>%
+  mutate(y.position = log10(max(ds.sites.only$totalLengthOccupation) + 20))
+
+# Set the colors of the boxes
+col <- c("Coastal" = "light blue","Non-coastal" = "dark green")
+
+ds.sites.only %>% 
+  ggplot() +
+  geom_boxplot(aes(x=coastal, y=totalLengthOccupation+0.01, fill=coastal), notch = T) +
+  stat_pvalue_manual(stat.test, label = "p.signif") +
+  scale_fill_manual(values=col)  +
+  scale_y_log10() +
+  xlab("") + ylab("Length of occupation") +
+  theme_classic() +
+  theme(legend.position = "None")
+
+# When manually exporting this, I used the PDF format 4x6 inches.
+
+```
+
+The p-value between the two medians is `r stat.test$p.format`.
+
+#### Palimpsest data
+
+This second figure is for the palimpsest data. **Note that the y axis is on a log scale here for better visibility.**
+
+```{r comparing coastal vs. non-coastal and length of occupation by patch}
+
+stat.test <- compare_means(data=ds.per.patch.occupied.only, totalLengthOccupation ~ coastal) %>%
+  mutate(y.position = log10(max(ds.per.patch.occupied.only$totalLengthOccupation) + 20))
+
+ds.per.patch.occupied.only %>% 
+  ggplot() +
+  geom_boxplot(aes(x=coastal, y=totalLengthOccupation + 0.01, fill=coastal), notch = T) +
+  stat_pvalue_manual(stat.test, label = "p.signif") +
+  scale_fill_manual(values=col)  +
+  scale_y_log10() +
+  xlab("") + ylab("Length of occupation") +
+  theme_classic() +
+  theme(legend.position = "None")
+
+```
+
+The p-value between the two medians is `r stat.test$p.format`.
+
+The difference is significant at both time scales.
+
+**Therefore, the answer to questions 1 is: Distance from the coast is not a great predictor of occupation length as there is a lot of variability in the data, but coastal cells have longer occupations than non-coastal cells, especially at the long time-scale.**
+
+The impact of the coast is even more visible when plotting those values on a map. The first map shows the mean of the occupation lengths for each cell in all simulations, whereas the second map shows the sum of occupations. This shows that accumulation (palimpsest) and reoccupation of the same cells on the coast has a strong impact on cells' length of occupation.
+
+```{r Mapping sites}
+
+# this function gives the ABM cells their correct coordinates (in the same context as the raster map used)
+
+reformat.sites <- function(ds){
+
+    # Transform into a raster with the same coordinates as the imported map
+    ds$xcor <- (ds$xcor * xres(veg) ) + xmin(veg) + (xres(veg) / 2) # xmin extent of the original map
+    ds$ycor <- (ds$ycor * yres(veg) ) + ymin(veg) + (yres(veg) / 2) # ymin extent of the original map
+
+    # Focus on the xy coordinates and the number of points in each.
+    return (ds)
+}
+
+```
+
+```{r plotting variables on a map}
+
+library(RColorBrewer)
+
+# the first argument is the dataset
+# var is what is plotted
+# t is for the title of the map
+# reocc is for if the data is yearly (F) or palimpsest (T)
+
+mapSites <- function(ds, var, t, reocc){
+  
+  if (reocc){
+    
+    #nRun <- max(ds$bs.run.number) # the number of runs done
+    
+    d <- ds %>% 
+      filter(var > 0) %>% 
+      group_by(xcor,ycor) %>% # group by coordinates to get stats
+      summarise(value = sum(get(var), na.rm = T)) %>%  # mean
+      ungroup()
+    
+  }else{
+    d <- ds %>% 
+      filter(var > 0) %>% 
+      group_by(xcor,ycor) %>% # group by coordinates to get stats
+      summarise(value = mean(get(var), na.rm = T)) %>%  # mean
+      ungroup()
+  
+  }
+  
+  print(max(d$value))
+  
+  d <- reformat.sites(d)
+
+  # Continuous for both size and color
+  plot <- d %>%
+    arrange(value) %>% # So the largest values are plotted last and thus are on top
+    ggplot() +
+      geom_raster(data=veg.df, aes(x=x, y=y, fill=maxKcal)) +
+      scale_fill_continuous(high = "grey10", low = "grey100") +
+      geom_point(aes(x=xcor, y=ycor, color=value, size=value), alpha = 0.7) +
+      scale_color_continuous(name = "Value", type = "viridis", direction = -1) +
+      scale_size_continuous(range = c(0.01,10)) +
+      ggtitle(t) +
+      coord_equal() +
+      theme_map() +
+      theme(legend.position="bottom") +
+      theme(plot.title = element_text(hjust=0.5, size=14, face="bold"))
+
+  print(plot)
+
+}
+
+```
+
+```{r mapping the length of occupation in palimpsests, echo=F, warning=F, message=F}
+
+mapSites(ds.sites.only, "totalLengthOccupation", "Mean length of occupation for all runs", F)
+
+mapSites(ds.sites.only, "totalLengthOccupation", "Summed length of occupation for all runs (palimpsest)", T)
+
+```
+
+## Question 2: Does distance from a productive coast influence the density of artifact found in a site?
+
+### Regressions
+
+#### Yearly data
+
+First looking at individual simulations separately (yearly data). This dataset includes only the sites with at least one discarded hunting tool.
+
+The following linear regression shows the impact of distance from the coast on a cell's assemblage of discarded hunting tools.
+
+```{r regression distance impact on assemblage} 
+
+ds.sites.only.wt.armature <- ds.sites.only %>% 
+  filter(length.assemblage > 0)
+
+ds.sites.only.wt.armature %>% 
+  runningLM(length.assemblage ~ distCoast)
+
+ggplot(ds.sites.only.wt.armature, aes(x=distCoast, y=length.assemblage)) + 
+  geom_point(alpha=0.1) +
+  xlab("distance coast (km)") + ylab("Number of armatures discarded on the cell") +
+  theme_classic()
+
+```
+
+While the graph suggests that there is a slight correlation between the values, the regression shows that it is not a linear relationship. Running a third degree polynomial improves the results slightly.
+
+```{r polynomial regression on yearly assemblage data}
+
+ds.sites.only.wt.armature %>% 
+  runningLM(length.assemblage ~ poly(distCoast, 3))
+
+```
+
+#### Palimpsest data
+
+The following regression is on palimpsest data (here again, including only cells where at least one hutning tool was discarded). **Note that the y axis is on a log scale here for better visibility.**
+
+```{r effect of distance on assemblages per cell}
+
+ds.per.patch.wt.armature <- ds.per.patch.occupied.only %>% 
+  filter(length.assemblage > 0)
+
+# Running the regression
+ds.per.patch.wt.armature %>% 
+  runningLM(length.assemblage ~ distCoast)
+
+# First let's visualize it.
+ds.per.patch.wt.armature %>% 
+  ggplot() +
+  geom_jitter(aes(x=distCoast, y=length.assemblage), alpha=0.1) +
+  scale_y_log10() +
+  xlab("distance coast (km)") + ylab("Number of armatures discarded on the cell") +
+  theme_classic()
+
+```
+
+Here we can see that, while the regression remains pretty weak (R2), the graph clearly shows that the bigger numbers are only in cells close to the ocean. A third degree polynomial regression improves the fit a little bit.
+
+```{r polynomial regression on palimpsest assemblage data}
+
+ds.per.patch.wt.armature %>% 
+  runningLM(length.assemblage ~ poly(distCoast, 3))
+
+```
+
+### Comparing coastal to non-coastal
+
+#### Yearly data
+
+Then we compared the assemblage sizes in coastal vs. inland cells, using the complete dataset of cells with at least one hunting tool. This first figure is for each site in each individual simulation (yearly values). *Note that the y axis is on a log scale here for better visibility.*
+
+```{r comparing coastal vs. non-coastal and assemblage}
+
+stat.test <- compare_means(data=ds.sites.only.wt.armature, length.assemblage ~ coastal) %>%
+  mutate(y.position = log10(max(ds.sites.only.wt.armature$length.assemblage) + 1))
+
+ds.sites.only.wt.armature %>% 
+  ggplot() +
+  geom_boxplot(aes(x=coastal, y=length.assemblage, fill=coastal), notch = T) +
+  stat_pvalue_manual(stat.test, label = "p.signif") +
+  scale_fill_manual(values=col)  +
+  scale_y_log10() +
+  xlab("") + ylab("Number of discarded weapons") +
+  theme_classic() +
+  theme(legend.position = "None")
+
+```
+
+The p-value between the two medians is `r stat.test$p.format`.
+This graph is difficult to read as most values are 1 for both regions.
+
+#### Palimpsest data
+
+The second graph is for palimpsest data. **Note that the y axis is on a log scale here for better visibility.**
+
+```{r comparing coastal vs. non-coastal and assemblage by patch}
+
+stat.test <- compare_means(data=ds.per.patch.wt.armature, length.assemblage ~ coastal) %>%
+  mutate(y.position = log10(max(ds.per.patch.wt.armature$length.assemblage) + 15))
+
+ds.per.patch.wt.armature %>% 
+ggplot() +
+  geom_boxplot(aes(x=coastal, y=length.assemblage, fill=coastal), notch = T) +
+  stat_pvalue_manual(stat.test, label = "p.signif") +
+  scale_fill_manual(values=col)  +
+  scale_y_log10() +
+  xlab("") + ylab("Number of discarded weapons accumulated") +
+  theme_classic() +
+  theme(legend.position = "None")
+
+# To export the graph for the figure, I used PDF 4x5 inches.
+
+```
+
+The p-value between the two medians is `r stat.test$p.format`.
+
+This shows more clearly the difference between assemblage size at coastal vs inland sites.
+
+Here again, we can map the mean and summed size of assemblages per cell to see if the coastal vs. inland separation shows up.
+
+```{r mapping the size of assemblages in palimpsests}
+
+mapSites(ds.sites.only.wt.armature, "length.assemblage", "Mean number of discarded hunting tools", F)
+mapSites(ds.sites.only.wt.armature, "length.assemblage", "Sum of discarded hunting tools in all runs (palimpsest)", T)
+
+```
+
+These maps show clearly that the reoccupation of the same cells has an important impact on the size of the assemblage accumulated on those cells.
+
+It is interesting to see that higher means are found in Sand Fynbos, where most of the hunting takes place, but that sums are higher on the coast.
+
+**The answer to question 2 is: Distance from the coast is a weak but significant predictor of the size of artifact assemblages. But, coastal cells do have a bigger assemblage than inland cells.**
+
+## Question 3: Can we use shell density as an indicator of the importance of shellfish in prehistoric foragers’ diet?
+
+For each simulation, we calculated the total kcal consumed and the total kcal from each food source. We then used those numbers to calculate the ratio of each food source in the diet. 
+
+*All cells*
+
+The following table show the relative contribution of each food source in all cells and all simulations. **This includes all cells (even the ones not occupied by a camp, but where shellfish processing occurred).**
+
+```{r calculate the amount of food collected per run}
+
+# Let's check a summary of values per simulation
+foodSourceContributions <- ds.sites %>% 
+  dplyr::select(totKcal, sumShell, sumMeat, sumPlant) %>% 
+  summarise(sumKcal = sum(totKcal),
+            meanKcalPerSim = sumKcal / 3200,
+            percShell = sum(sumShell)/sumKcal*100,
+            percMeat = sum(sumMeat)/sumKcal*100,
+            percPlant = sum(sumPlant)/sumKcal*100) %>% 
+  dplyr::select(!sumKcal)
+
+foodSourceContributions
+
+```
+In all simulations, there is an average (mean) of `r foodSourceContributions$meanKcalPerSim` calories consumed, and shell accounts on average (mean) for `r round(foodSourceContributions$percShell, 2)`% of the diet. 
+
+*Most occupied cells*
+
+```{r focusing on visible cells}
+
+quant95 <- quantile(ds.per.patch$totalLengthOccupation, probs = 0.95)
+
+# Let's focus on the patches with an occupation length higher than some value
+
+focus <- ds.per.patch %>% 
+  filter(totalLengthOccupation > quant95) 
+
+```
+
+Then, we focused on the cells that are most occupied the longest and recalculated this average shellfish contribution. Let's assume that archaeological sites will be found only if they have a certain level of reoccupation. So, focusing on those reoccupied cells (with total length of occupation > 95th percentile), what is the shells kcal contribution we see? `r (sum(focus$sumShell)/sum(focus$totKcal))*100`%.
+
+```{r testing the significance of the difference}
+
+# Is the difference in average (median) statistically significant? 
+tempAbove <- ds.per.patch %>% 
+  filter(totalLengthOccupation > quant95) %>% 
+  mutate(aboveQuant = TRUE)
+
+tempAll <- ds.per.patch %>% 
+  mutate(aboveQuant = FALSE) %>% 
+  rbind(tempAbove) # popular cells are counted twice here as they need to be counted for when computing the average contribution of shells
+
+t <- compare_means(data=tempAll, sumShell ~ aboveQuant)
+
+focus %>% 
+  ungroup() %>% 
+  dplyr::select(totKcal, sumShell, sumMeat, sumPlant) %>% 
+  summarise(sumKcal = sum(totKcal),
+            percShell = sum(sumShell)/sumKcal*100,
+            percMeat = sum(sumMeat)/sumKcal*100,
+            percPlant = sum(sumPlant)/sumKcal*100) %>% 
+  dplyr::select(!sumKcal)
+  
+```
+
+A Wilcoxon test run on the difference between this sample of well-occupied cells and the whole landscape has a p-value of: `r t$p.format`.
+
+So, when we focus on the most occupied cells, the percentage of shell contribution increases significantly and provides a contribution that does not represent reality. Therefore, this shows that we have the potential to over-estimate the level of shellfish consumed by prehistoric people.
+
+This pattern is even stronger when we focus on the most popular coastal sites only:
+
+```{r mean shellfish contribution per coastal vs inland cells}
+
+focus %>% 
+  dplyr::select(coastal, totKcal, sumShell, sumMeat, sumPlant) %>% 
+  group_by(coastal) %>% 
+  summarise(sumKcal = sum(totKcal),
+            percShell = sum(sumShell)/sumKcal*100,
+            percMeat = sum(sumMeat)/sumKcal*100,
+            percPlant = sum(sumPlant)/sumKcal*100) %>% 
+  dplyr::select(!sumKcal)
+
+tempAbove <- ds.per.patch %>% 
+  filter(totalLengthOccupation > quant95, coastal == "Coastal") %>% 
+  mutate(aboveQuant = TRUE)
+
+tempAll <- ds.per.patch %>% 
+  mutate(aboveQuant = FALSE) %>% 
+  rbind(tempAbove) # popular cells are counted twice here as they need to be counted for when computing the average contribution of shells
+
+t <- compare_means(data=tempAll, sumShell ~ aboveQuant)
+
+rm(tempAbove, tempAll)
+
+```
+
+Comparing the two averages (most reused coastal cells vs all cells) has the following p-value: `r t$p.format`.
+
+The answer to question 3 is: **No, we cannot equate the shellfish density in coastal archaeological sites to their importance in prehistoric people's diets, because coastal sites that are visited more often contain more shellfish refuse than what is the usual contribution of shellfish in the diet.**
+
+#### Visualizing the relationship between distance from coast and shellfish discard
+
+We follow this with a few graphs showing the relationship between cells' distance from coast and the amount of shellfish processed (and eaten, in most cases) at each cells.
+
+```{r impact of distance from coast on shellfish sum}
+
+ds.sites %>% 
+  filter(sumShell > 0) %>% #focusing only on cells where shellfish was discarded
+ggplot(aes(x=distCoast, y=sumShell)) +
+  geom_point(alpha=0.3) +
+  xlim(0,8) +
+  xlab("distance coast (km)") +
+  ylab("yearly shellfish consumed (kcal)\n") +
+  theme_classic()
+
+# This is cumulative (palimpsest) (to export, Letter Landscape PDF)
+ds.per.patch %>% 
+  filter(sumShell > 0) %>% 
+ggplot(aes(x=distCoast, y=sumShell)) +
+  geom_point(alpha=0.3) +
+  xlab("distance coast (km)") +
+  ylab("palimpsest shellfish consumed (kcal)\n") +
+  theme_classic()
+
+# Focusing on the crux of the data (to export: 3x4 inch PDF)
+ds.per.patch %>% 
+  filter(sumShell > 0) %>% 
+ggplot(aes(x=distCoast, y=sumShell)) +
+  geom_point(alpha=0.3) +
+  xlim(0,2) + ylim(0,30000000) +
+  xlab("distance coast (km)") +
+  ylab("palimpsest shellfish consumed (kcal)\n") +
+  theme_classic()
+
+```
+
+#### Comparison with empirical data
+
+We compare the graphs shown above to similar graphs using empirical data from South and West African archaeological sites (compiled by Jerardino 2016). Here is the similar graph based on Jerardino's table 2.
+
+```{r import and plot Jerardino data}
+
+jerardino <- read_csv("Jerardino_2016_2.csv")
+
+# set up shapes
+shapes <- c(4,16)
+
+jerardino %>% 
+  pivot_longer(cols = c(`MNI/m3 (average)`, `kg/m3 average`), names_to = "variable", values_to = "value") %>% 
+  mutate(SiteType=factor(SiteType, levels = c("C","O"), labels = c("Cave","Open-air")),
+         AgeClass = factor(AgeClass, levels = c("H","P"), labels= c("Holocene","Pleistocene"))) %>% 
+  ggplot(aes(x=DistanceToShoreCorr, y=value)) +
+  geom_point(aes(color=AgeClass, shape=SiteType)) +
+  #geom_text(aes(label=Site), hjust=-0.15, check_overlap=T, size=3) +
+  facet_wrap(~variable, scales="free_y", ncol=2) +
+  xlim(0,8) +
+  #scale_y_log10()+
+  xlab("Distance from coast (km)") +
+  ylab("") +
+  scale_shape_manual(values=shapes) +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+```
+
+Out of curiosity, we computed third degree polynomial regressions on this dataset. 
+
+```{r polynomial regressions on Jerardinos data}
+
+# Correlation between distance and deposition rate (without outlier)
+
+mod <- lm(`MNI/m3 (average)`~poly(DistanceToShoreCorr,3), na.rm = T, data=jerardino)
+summary(mod)
+
+mod <- lm(`kg/m3 average`~poly(DistanceToShoreCorr,3), na.rm = T, data=jerardino)
+summary(mod)
+
+# If I need to statistically compare the two distribution, glm with gamma or poisson might be the solution. Need to look more into this.
+
+```
+
+The results show fair relationships between the distance from coast and shellfish abundance proxies, except that the second relationship is not statistically significant.
+
+
+THE END

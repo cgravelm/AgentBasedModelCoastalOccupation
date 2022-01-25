@@ -1,0 +1,470 @@
+---
+title: "Coastal paper Sensitivity analyses"
+date: "02/05/2021"
+output: html_document
+---
+
+```{r setup, include = F}
+
+library(tidyverse)
+library(reshape2)
+library(ggpubr)
+
+load("FormattedSensitivity.RData")
+
+```
+
+```{r setup chunks default, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+# Sensitivity analyses 
+
+These analyses are used to identify the length of run, minimum number or runs, and settings wanted to obtain a realistic level of variability in the results. Therefore, we are looking for parameters that will sustain a population over time, but will still create some variability in results that may represent the consequences of different human behaviors.
+
+The output value measured over runs is mainly the ratio of shellfish discarded at coastal vs. non-coastal cells (called the shell ratio), however, we consider the ratio of meat and plants as well for some tests, just in case.
+
+The parameter values used to determine length and number of repetitions are the following:
+
+| Variables          | Values                     | 
+| ------------------ | -------------------------- |
+| spatial-foresight  | TRUE             |     
+| nrcamps            | 5              |
+| daily-time-budget  | 10         |  
+| hunter-percent     | 0.3  |
+| vision-forager     | 20   |
+| forager-movement  | local-patch-choice |
+| nrforagers         | 40  |
+| days_of_foresight  | 5                |
+| global-knowledge?  | TRUE      |
+| walk-speed        | 2 |
+| point-recycling    | 25        |
+| point-hunting-rate | 50  |
+| onsiteProcessThreshold | 20 |
+
+
+## First: Length of runs
+
+We ran one run over 5,000 ticks and collected data at every time step. 
+We then look at when the variability in the ratios stabilize to identify the best run length to get at variability.
+
+```{r Plotting cumulative CV}
+
+# To quickly calculate the cumulative CV of variable x
+## Formula obtained on StackExchange
+
+cumCV <- function(x){
+  
+  ## Creates a sequence of the numbers
+  n <- seq_along(x)
+  
+  ## cumulative mean
+  m <- cumsum(x) / n
+
+  ## cumulative squared mean
+  m2 <- cumsum(x * x) / n
+
+  ## cumulative variance
+  v <- (m2 - m * m) * (n / (n - 1))
+
+  ## cumulative standard deviation
+  s <- sqrt(v)
+  
+  # CV is standard deviation/mean
+  cv <- s / m
+  
+  return(cv)
+}
+
+# To get the CV of the multiple parts and plot its change over time
+
+plotCV <- function(data, varName){
+  
+  # Clean the data if there are NaN and compute the cumulative CV
+  data <- data %>% 
+    na.omit() %>%
+    mutate(cumulative_cv = cumCV(!!as.name(varName))) %>% 
+    na.omit()
+  
+  # Create a graph that shows the changes in CV as the sample size increases
+  ggplot(data) +
+    geom_point(aes(x=c(1:nrow(data)), y=cumulative_cv)) +
+    geom_segment(aes(x = 1, y = cumulative_cv[nrow(data)], xend = nrow(data), 
+                     yend = cumulative_cv[nrow(data)], colour = "red")) + 
+    xlab("Sample size") + ylab("CV\n") +
+    theme_bw(base_size = 16) +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    guides(colour = "none")
+
+}
+
+```
+
+### Shellfish ratio
+
+```{r plot shellfish ratio}
+
+# Plot the cumulative CV from the summary table
+plotCV(ds.Length, "ratioShell")
+
+```
+
+### Meat ratio
+
+```{r plot meat ratio}
+
+# Plot the cumulative CV from the summary table
+plotCV(ds.Length, "ratioMeat")
+
+```
+
+### Plant ratio
+
+```{r plot plant ratio}
+
+# Plot the cumulative CV from the summary table
+plotCV(ds.Length, "ratioPlant")
+
+```
+
+The CV stabilizes around ~800 ticks for shell, ~800 ticks for plants, and ~250 ticks for meat. But as the variability decreases for all after 250, I can simply **do a 1 year run (365 time steps).** It makes sense analytically as well.
+
+## Second: Number of repetitions
+
+We ran 500 iterations of one simulation setting for 365 steps and collected final values for each of these. 
+
+We then looked for the number of runs where the ratios stabilized to identify the minimum number of repetitions needed to capture important variability. The red line represents the CV of the full 500 runs. Therefore, when the incremental runs' CV reach near the red line is where the CV stops changing considerably.
+
+### Shell ratio
+
+```{r Plot the ratio of shell per repetitions}
+
+# Compile ratios per run
+plotCV(ds.Repetitions, "ratioShell")
+
+```
+### Meat ratio
+
+```{r Plot the ratio of meat per repetitions}
+
+# Compile ratios per run
+plotCV(ds.Repetitions, "ratioMeat")
+
+```
+
+### Plant ratio
+
+```{r Plot the ratio of plant per repetitions}
+
+# Compile ratios per run
+plotCV(ds.Repetitions, "ratioPlant")
+
+```
+
+The different CVs stabilize near 50, so this suggests that using **50 repetitions** will correctly capture most of the variation.
+
+## Third: Parameter settings
+
+We ran 5 runs for 100 steps using these different settings, and collected final values for each. 
+
+| Variables          | Values                     | 
+| ------------------ | -------------------------- |
+| spatial-foresight  | TRUE, FALSE              |     
+| nrcamps            | 5, 20              |
+| daily-time-budget  | 6, 8, 10                 |  
+| hunter-percent     | 0.3, 0.5  |
+| vision-forager     | 10, 20   |
+| forager-movement  | local-patch-choice, random
+| nrforagers         |40, 60  |
+| days_of_foresight  | 5, 10                |
+| global-knowledge?  | TRUE, FALSE      |
+| walk-speed        | 2, 3 |
+| point-recycling    | 25        |
+| point-hunting-rate | 50  |
+| onsiteProcessThreshold | 10, 30, 50 |
+
+The following plots show the impact of (or lack thereof) changing each parameter on the shell ratio only. The graph shows if there is a significant difference between the medians.
+
+```{r functions to plot impact of all settings}
+
+# this is so I don't have to write it all again and it doesn't break if things change as I troubleshoot
+
+setWilcoxLabels <- function(nCombinations){
+  
+  if(nCombinations == 1){
+    return(c(1.2))
+  }  
+
+  if(nCombinations == 3){
+    return(c(1.2, 1.10,
+             1.2))
+  }
+
+}
+
+wilcoxAndPlot <- function(data, formula){
+  
+  stat.test <- compare_means(formula, data)
+  stat.test <- stat.test %>% 
+    mutate(y.position=setWilcoxLabels(nrow(stat.test))) 
+  
+  return(stat.test)
+}
+
+plotEffectVariables <- function(ds, varName){
+  
+  p <- ggplot(ds, aes_string(x=varName, y="ratioShell")) +
+    geom_boxplot(notch = T) +
+    ylab("Ratio Shell in Coastal habitat") +
+    stat_pvalue_manual(stat.test, label = "p.signif") +
+    theme_bw() 
+  
+  print(p)
+  
+  ds %>% 
+    group_by_(varName) %>% 
+    summarize(median = median(ratioShell))
+  
+}
+
+```
+
+```{r plotting the variables}
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~spatial.foresight)
+plotEffectVariables(ds.Settings.full, "spatial.foresight")
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~n.camps)
+plotEffectVariables(ds.Settings.full, "n.camps")
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~n.foragers)
+plotEffectVariables(ds.Settings.full, "n.foragers")
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~daily.time.budget)
+plotEffectVariables(ds.Settings.full, "daily.time.budget")
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~days.foresight)
+plotEffectVariables(ds.Settings.full, "days.foresight")
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~vision.forager)
+plotEffectVariables(ds.Settings.full, "vision.forager")
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~forager.movement)
+plotEffectVariables(ds.Settings.full, "forager.movement")
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~global.knowledge)
+plotEffectVariables(ds.Settings.full, "global.knowledge")
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~walk.speed)
+plotEffectVariables(ds.Settings.full, "walk.speed")
+
+stat.test <- wilcoxAndPlot(ds.Settings.full, ratioShell~onsiteProcessThreshold)
+plotEffectVariables(ds.Settings.full, "onsiteProcessThreshold")
+
+```
+
+This clearly shows that Spatial Foresight has the biggest effect. If spatial foresight is ON, what do the other variables do? The next graphs show the impact of each parameter when spatial foresight is ON.
+
+### Impact of parameters when spatial foresight is ON
+
+```{r plot with spatial foresight}
+
+ds.foresight <- ds.Settings.full %>% 
+  filter(spatial.foresight == TRUE)
+
+stat.test <- wilcoxAndPlot(ds.foresight, ratioShell~n.camps)
+plotEffectVariables(ds.foresight, "n.camps")
+
+stat.test <- wilcoxAndPlot(ds.foresight, ratioShell~n.foragers)
+plotEffectVariables(ds.foresight, "n.foragers")
+
+stat.test <- wilcoxAndPlot(ds.foresight, ratioShell~daily.time.budget)
+plotEffectVariables(ds.foresight, "daily.time.budget")
+
+stat.test <- wilcoxAndPlot(ds.foresight, ratioShell~days.foresight)
+plotEffectVariables(ds.foresight, "days.foresight")
+
+stat.test <- wilcoxAndPlot(ds.foresight, ratioShell~vision.forager)
+plotEffectVariables(ds.foresight, "vision.forager")
+
+stat.test <- wilcoxAndPlot(ds.foresight, ratioShell~forager.movement)
+plotEffectVariables(ds.foresight, "forager.movement")
+
+stat.test <- wilcoxAndPlot(ds.foresight, ratioShell~global.knowledge)
+plotEffectVariables(ds.foresight, "global.knowledge")
+
+stat.test <- wilcoxAndPlot(ds.foresight, ratioShell~walk.speed)
+plotEffectVariables(ds.foresight, "walk.speed")
+
+stat.test <- wilcoxAndPlot(ds.foresight, ratioShell~onsiteProcessThreshold)
+plotEffectVariables(ds.foresight, "onsiteProcessThreshold")
+
+```
+
+Almost all variables have an impact!
+
+    +**Number of camps**: More camps lead to slightly higher ratio of shells in coastal sites
+    +**Number of foragers**: More foragers lead to a slightly higher shell ratio in coastal sites, but the difference is pretty small (median 0.960 vs. 0.963).
+    +**Daily time budget**: No significant differences.
+    +**Days of foresight**: More days of foresight lead to smaller ratio of shells on coastal sites (0.975 vs. 0.943)
+    +**Vision of foragers**: Wider vision (20 cells vs. 10) lead to a higher ratio of shells on coastal sites (0.964 vs. 0.959).
+    +**Forager movement**: Random movement leads to lower rates of shell at coastal sites than local-patch-choice movement (0.943 vs. 0.983).
+    +**Global knowledge**: No significant differences
+    +**Walk speed**: Faster walking lead to lower rates of shells at coastal sites (0.963 vs. 0.959)
+    +**On site processing**: Larger threshold (when people can carry shellfish to the camps that are farther from the beach) are linked to lower rates of shells at coastal sites.
+
+# Linear regression
+
+We then ran a multi-linear regression (on normalized data) to show the impact of all variables on the ratio of shells in coastal sites:
+
+```{r Trying a linear regression model, echo = F, warning = F}
+
+normalize <- function(x){
+  
+  return((x - min(x)) / (max(x) - min(x)))
+  
+}
+
+runningLM <- function(ds, yVal){
+  
+  # Changing factors back to numeric)
+  ds <- ds %>% 
+    mutate(n.foragers = as.numeric(as.character(n.foragers)),
+           n.camps = as.numeric(as.character(n.camps)),
+           daily.time.budget = as.numeric(as.character(daily.time.budget)),
+           hunter.percent = as.numeric(as.character(hunter.percent)),
+           vision.forager = as.numeric(as.character(vision.forager)),
+           days.foresight = as.numeric(as.character(days.foresight)),
+           walk.speed = as.numeric(as.character(walk.speed)),
+           onsiteProcessThreshold = as.numeric(as.character(onsiteProcessThreshold)))
+  
+  # Normalized
+  ds <- ds %>% 
+    mutate(n.foragers = normalize(n.foragers),
+           n.camps = normalize(n.camps),
+           daily.time.budget = normalize(daily.time.budget),
+           hunter.percent = normalize(hunter.percent),
+           vision.forager = normalize(vision.forager),
+           days.foresight = normalize(days.foresight),
+           walk.speed = normalize(walk.speed),
+           onsiteProcessThreshold = normalize(onsiteProcessThreshold))
+  
+  model <- lm(ds[[yVal]] ~ spatial.foresight + n.camps + daily.time.budget + hunter.percent + vision.forager + forager.movement + n.foragers + days.foresight + global.knowledge + walk.speed +  onsiteProcessThreshold, data = ds)
+
+  print(summary(model))
+  
+}
+
+runningLM(ds.Settings.full, "ratioShell")
+
+```
+
+This helps disentangle the impact of the variables. According to the linear regression, the variables that have a significant impact on shells are:
+
+    + Spatial foresight: Positive relationship if TRUE (significant)
+    + Number of camps: Positive relationship (significant)
+    + Daily time budget: Negative relationship (NOT significant)
+    + Hunter percentage: Negative relationship (significant)
+    + Vision of foragers: Positive relationship (NOT significant)
+    + Forager movement: Negative relationship if Random (significant)
+    + Number of foragers: Positive relationship (significant)
+    + Days of foresight: Negative relationship (significant)
+    + Global knowledge: Positive relationship if TRUE (NOT significant)
+    + Walk speed: Negative relationship (significant)
+    + Onsite Processing Threshold: Positive relationship (NOT significant)
+    
+So, the daily foraging time, their vision, and global knowledge do not have significant impacts. Onsite processing does not in the regression, but do in the graphs.
+
+Finally, we have to make sure that we keep only the variables that are sustainable (no forager gets hungry for too long).
+
+```{r plot mean kcal with variables}
+
+# Let's start with population stuff
+
+ds.Settings.full <- ds.Settings.full %>% 
+  mutate(daily.time.budget = factor(daily.time.budget,
+                                    levels = c(6,8,10), 
+                                    labels = c("6h foraging","8h foraging","10h foraging")),
+         n.camps = factor(n.camps,
+                          levels = c(5,20),
+                          labels = c("5 camps","20 camps")),
+         n.foragers = factor(n.foragers,
+                             levels = c(40,60),
+                             labels = c("40 foragers","60 foragers")),
+         hunter.percent = factor(hunter.percent,
+                                 levels=c(0.3, 0.5),
+                                 labels = c("30% hunters","50% hunters")),
+         spatial.foresight = factor(spatial.foresight,
+                                    levels= c(TRUE, FALSE),
+                                    labels = c("Foresight","No foresight")),
+         global.knowledge = factor(global.knowledge, 
+                                   levels = c(TRUE,FALSE),
+                                   labels = c("Global knowledge","No global knowledge")),
+         walk.speed = factor(walk.speed,
+                             levels = c(2,3),
+                             labels=c("2km/h","3km/h")),
+         vision.forager = factor(vision.forager, 
+                                 levels = c(10,20),
+                                 labels = c("10 cell vision","20 cell vision")))
+
+ds.Settings.full %>% 
+  ggplot() +
+  geom_boxplot(aes(x=n.camps, y=mean.kcal)) +
+  facet_grid(n.foragers~daily.time.budget) +
+  geom_hline(yintercept=2000, color = "red")
+
+ds.Settings.full %>% 
+  ggplot() +
+  geom_boxplot(aes(x=n.camps, y=mean.kcal)) +
+  facet_grid(n.foragers~hunter.percent) +
+  geom_hline(yintercept=2000, color = "red")
+
+# Then knowledge of the environment
+
+ds.Settings.full %>% 
+  ggplot() +
+  geom_boxplot(aes(x=spatial.foresight, y=mean.kcal)) +
+  facet_grid(days.foresight~global.knowledge) +
+  geom_hline(yintercept=2000, color = "red")
+
+# Finally, mobility
+
+ds.Settings.full %>% 
+  ggplot() +
+  geom_boxplot(aes(x=forager.movement, y=mean.kcal)) +
+  facet_grid(walk.speed~vision.forager) +
+  geom_hline(yintercept=2000, color = "red")
+
+```
+These show the following:
+    + Spatial foresight needs to be TRUE.
+    + Speed does not need to be a specific value.
+    + Global knowledge can vary.
+    + Daily-time-budget needs to be at least 10h of foraging.
+    + Population size can be either 40 or 60.
+    + 30% hunters is best.
+    + while forager-movement should be based on local-patch-choice, we want to add some randomness to the array of results, so we will use random as well.
+
+Given those information, here are the runs we use for the main analysis:
+
+| Variables          | Values                     | 
+| ------------------ | -------------------------- |
+| spatial-foresight  | TRUE             |     
+| nrcamps            | 5, 15              |
+| daily-time-budget  | 10, 12         |  
+| hunter-percent     | 0.3  |
+| vision-forager     | 20   |
+| forager-movement  | local-patch-choice, random |
+| nrforagers         | 60  |
+| days_of_foresight  | 5, 10                |
+| global-knowledge?  | TRUE      |
+| walk-speed        | 2, 3 |
+| point-recycling    | 25        |
+| point-hunting-rate | 50  |
+| onsiteProcessThreshold | 20, 50 |
+
+So, 64 combinations run 50 times, over 365 ticks, for a total of **3200* runs.
